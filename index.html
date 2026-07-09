@@ -159,8 +159,8 @@
       <label class="small" for="theme">Set &amp; board</label>
       <select id="theme">
         <option value="club">Tournament</option>
-        <option value="carrara">Carrara Marble</option>
-        <option value="walnut">Heirloom Walnut</option>
+        <option value="carrara">Marble</option>
+        <option value="walnut">Walnut</option>
       </select>
     </div>
     <div class="row">
@@ -444,7 +444,7 @@ const Chess = (() => {
    ================================================================ */
 const THEMES = {
   walnut: {
-    name: 'Heirloom Walnut',
+    name: 'Walnut',
     squareLight: 0xd9c39a, squareDark: 0x4e3520, grain: 0.16,
     frame: 0x35241a, frameEdge: 0x2a1c12,
     table: 0x6e4b2c, tableGrain: 0.22,
@@ -468,7 +468,7 @@ const THEMES = {
     keyTemp: { light: 0xfdf6ea, dark: 0xffe2b0 }
   },
   carrara: {
-    name: 'Carrara Marble',
+    name: 'Marble',
     squareLight: 0xeceae4, squareDark: 0x53565c, grain: 0.10,
     // Real polished-stone photographs (see PBR.whiteMarble / PBR.darkMarble
     // below) instead of the shared wood veneer sets every other theme uses —
@@ -934,175 +934,6 @@ function buildBoard() {
 }
 buildBoard();
 
-/* ================================================================
-   5b. DESK PROPS  (chess clock, coffee cup + saucer, notepad + pen)
-   Purely decorative set dressing, procedural/low-poly, positioned on the
-   bare tabletop outside the board frame's footprint (half-extent 4.65) so
-   they never sit under the board or the captured-piece columns (section 7).
-   None of these meshes carry userData.square or userData.pieceType, so
-   pickSquare()'s parent-walk (section 9) simply falls through to "no
-   square" on a hit — clicking a prop is a no-op, never a crash.
-   ================================================================ */
-function buildDeskProps() {
-  const propsGroup = new THREE.Group();
-  scene.add(propsGroup);
-
-  // ---- chess clock, left of the board ----
-  // Body is deliberately chunky (a real analog/digital chess clock reads as
-  // a thick block, not a slab): displays live on the camera-facing front
-  // face in recessed dark bezels so they read as screens, not top-face
-  // blobs; the two paddle buttons live on the top face where the fixed
-  // top-down camera actually sees them, one visibly pressed lower than
-  // the other.
-  const clock = new THREE.Group();
-  const CLOCK_W = 1.9, CLOCK_H = 0.6, CLOCK_D = 0.45;
-  const clockBodyMat = new THREE.MeshStandardMaterial({ color: 0x2a2826, roughness: 0.65, metalness: 0.06 });
-  const clockBody = new THREE.Mesh(new RoundedBoxGeometry(CLOCK_W, CLOCK_H, CLOCK_D, 3, 0.06), clockBodyMat);
-  clockBody.castShadow = true; clockBody.receiveShadow = true;
-  clock.add(clockBody);
-
-  // LCD displays in dark bezels on the front face (+Z). The body is a solid
-  // box (no CSG), so a genuinely recessed cavity isn't possible; instead the
-  // bezel is a proud dark frame just outside the body surface and the LCD
-  // sits flush on the bezel's own face, slightly inset from the bezel's
-  // edge -- the dark step reads as a surround once lit, and (critically)
-  // both meshes sit OUTSIDE the body's front face (z > CLOCK_D/2) so they
-  // aren't just swallowed by the opaque body in front of them.
-  const bezelMat = new THREE.MeshStandardMaterial({ color: 0x0e0d0c, roughness: 0.6, metalness: 0.1 });
-  const bezelGeo = new THREE.BoxGeometry(0.8, 0.34, 0.05);
-  // muted grey-green LCD. The albedo is picked well below the target
-  // on-screen value because the front face catches the key light plus the
-  // HDRI: measured off a render, a mid-grey albedo here still tone-maps to
-  // near-white, so the base sits dark and the low envMapIntensity keeps the
-  // Daylight environment from pushing it back up.
-  const lcdMat = new THREE.MeshStandardMaterial({
-    color: 0x666e58, roughness: 0.9, metalness: 0,
-    emissive: 0x39402e, emissiveIntensity: 0.2
-  });
-  lcdMat.envMapIntensity = 0.25;
-  const lcdGeo = new THREE.PlaneGeometry(0.66, 0.24);
-  for (const side of [-1, 1]) {
-    const bezel = new THREE.Mesh(bezelGeo, bezelMat);
-    bezel.position.set(side * 0.47, 0.02, CLOCK_D / 2 + 0.015);
-    clock.add(bezel);
-    const lcd = new THREE.Mesh(lcdGeo, lcdMat);
-    lcd.position.set(side * 0.47, 0.02, CLOCK_D / 2 + 0.041);
-    clock.add(lcd);
-  }
-  const dotMat = new THREE.MeshStandardMaterial({ color: 0x9a2418, roughness: 0.5, metalness: 0 });
-  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 10), dotMat);
-  dot.position.set(0, 0.2, CLOCK_D / 2 + 0.03);
-  clock.add(dot);
-
-  // two proud top buttons — right one sits visibly lower, i.e. pressed
-  const buttonMat = new THREE.MeshStandardMaterial({ color: 0x1b1a17, roughness: 0.55, metalness: 0.1 });
-  const btnUp = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.16, 20), buttonMat);
-  btnUp.position.set(-0.55, CLOCK_H / 2 + 0.05, 0);
-  btnUp.castShadow = true;
-  clock.add(btnUp);
-  const btnDown = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.09, 20), buttonMat);
-  btnDown.position.set(0.55, CLOCK_H / 2 + 0.015, 0);
-  btnDown.castShadow = true;
-  clock.add(btnDown);
-
-  clock.position.set(-7.3, TABLE_TOP_Y + CLOCK_H / 2, 0);
-  clock.rotation.y = THREE.MathUtils.degToRad(18);
-  propsGroup.add(clock);
-
-  // ---- coffee cup + saucer, beyond the far-left corner ----
-  // Saucer is deliberately much wider than the cup rim (reads unambiguously
-  // as a saucer from top-down instead of a second white ring flush with the
-  // first), the liquid is a latte tan rather than near-black coffee so it
-  // separates from the white ceramic, and a small off-center foam pool +
-  // spiral line sells "coffee" rather than "dark disc." The handle sits at
-  // roughly 4-5 o'clock (camera-right, camera-near) after the group's yaw,
-  // matching the reference photo.
-  const cup = new THREE.Group();
-  const ceramicMat = new THREE.MeshStandardMaterial({ color: 0xf1e9da, roughness: 0.25, metalness: 0.02 });
-  const saucer = new THREE.Mesh(new THREE.CylinderGeometry(0.66, 0.58, 0.045, 32), ceramicMat);
-  saucer.position.y = 0.0225;
-  saucer.castShadow = true; saucer.receiveShadow = true;
-  cup.add(saucer);
-  const cupWall = new THREE.Mesh(new THREE.CylinderGeometry(0.30, 0.24, 0.34, 28, 1, true), ceramicMat);
-  cupWall.position.y = 0.045 + 0.17;
-  cupWall.castShadow = true;
-  cup.add(cupWall);
-  const cupBottom = new THREE.Mesh(new THREE.CircleGeometry(0.24, 28), ceramicMat);
-  cupBottom.rotation.x = -Math.PI / 2;
-  cupBottom.position.y = 0.045 + 0.005;
-  cup.add(cupBottom);
-  const coffeeMat = new THREE.MeshStandardMaterial({ color: 0xb9814f, roughness: 0.32, metalness: 0.04 });
-  const coffee = new THREE.Mesh(new THREE.CircleGeometry(0.285, 28), coffeeMat);
-  coffee.rotation.x = -Math.PI / 2;
-  coffee.position.y = 0.045 + 0.32;
-  cup.add(coffee);
-  const foamMat = new THREE.MeshStandardMaterial({ color: 0xf2e7d5, roughness: 0.55, metalness: 0 });
-  const foamPool = new THREE.Mesh(new THREE.CircleGeometry(0.10, 20), foamMat);
-  foamPool.rotation.x = -Math.PI / 2;
-  foamPool.position.set(0.07, 0.045 + 0.322, -0.05);
-  cup.add(foamPool);
-  const swirl = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.009, 8, 20, Math.PI * 1.4), foamMat);
-  swirl.rotation.x = -Math.PI / 2;
-  swirl.position.set(0.07, 0.045 + 0.324, -0.05);
-  cup.add(swirl);
-  const handle = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.03, 8, 20, Math.PI * 1.3), ceramicMat);
-  handle.rotation.z = Math.PI / 2 + 0.2;
-  handle.position.set(0.32, 0.045 + 0.17, 0);
-  handle.castShadow = true;
-  cup.add(handle);
-
-  // teaspoon resting across the saucer
-  const spoonMat = new THREE.MeshStandardMaterial({ color: 0xe7e1d3, roughness: 0.3, metalness: 0.65 });
-  const spoon = new THREE.Group();
-  const spoonHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.02, 0.5, 10), spoonMat);
-  spoonHandle.rotation.z = Math.PI / 2;
-  spoonHandle.position.x = 0.08;
-  spoonHandle.castShadow = true;
-  spoon.add(spoonHandle);
-  const spoonBowl = new THREE.Mesh(new THREE.SphereGeometry(0.085, 14, 10), spoonMat);
-  spoonBowl.scale.set(1, 0.3, 0.6);
-  spoonBowl.position.x = -0.30;
-  spoonBowl.castShadow = true;
-  spoon.add(spoonBowl);
-  spoon.rotation.y = THREE.MathUtils.degToRad(-40);
-  spoon.position.set(-0.12, 0.045 + 0.012, 0.44);
-  cup.add(spoon);
-
-  cup.position.set(-5.55, TABLE_TOP_Y, -3.5);
-  cup.rotation.y = THREE.MathUtils.degToRad(-25);
-  propsGroup.add(cup);
-
-  // ---- notepad + pen, beyond the far-right corner ----
-  const pad = new THREE.Group();
-  const clipboardMat = new THREE.MeshStandardMaterial({ color: 0x30363f, roughness: 0.55, metalness: 0.08 });
-  const clipboard = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.05, 1.55), clipboardMat);
-  clipboard.position.y = 0.025;
-  clipboard.castShadow = true; clipboard.receiveShadow = true;
-  pad.add(clipboard);
-  const paperMat = new THREE.MeshStandardMaterial({ color: 0xf3efe2, roughness: 0.9, metalness: 0 });
-  const paper = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.045, 1.32), paperMat);
-  paper.position.y = 0.05 + 0.0225;
-  paper.castShadow = true; paper.receiveShadow = true;
-  pad.add(paper);
-  const penMat = new THREE.MeshStandardMaterial({ color: 0x14141a, roughness: 0.35, metalness: 0.3 });
-  const pen = new THREE.Group();
-  const penBody = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.85, 12), penMat);
-  penBody.rotation.z = Math.PI / 2;
-  penBody.castShadow = true;
-  pen.add(penBody);
-  const penTip = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.09, 12), penMat);
-  penTip.rotation.z = Math.PI / 2;
-  penTip.position.x = 0.47;
-  penTip.castShadow = true;
-  pen.add(penTip);
-  pen.position.set(0.05, 0.05 + 0.045 + 0.02, 0.05);
-  pen.rotation.y = THREE.MathUtils.degToRad(35);
-  pad.add(pen);
-  pad.position.set(6.15, TABLE_TOP_Y, -3.75);
-  pad.rotation.y = THREE.MathUtils.degToRad(20);
-  propsGroup.add(pad);
-}
-buildDeskProps();
 
 /* ================================================================
    6. PIECES  (hand-profiled Staunton set, lathe + extrusion)
