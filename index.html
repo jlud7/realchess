@@ -128,10 +128,9 @@
     <div class="row">
       <label class="small" for="theme">Set &amp; board</label>
       <select id="theme">
-        <option value="walnut">Heirloom Walnut</option>
-        <option value="club">Tournament Club</option>
+        <option value="club">Tournament</option>
         <option value="carrara">Carrara Marble</option>
-        <option value="ember">Midnight Ember</option>
+        <option value="walnut">Heirloom Walnut</option>
       </select>
     </div>
     <div class="row">
@@ -426,7 +425,7 @@ const THEMES = {
     keyTemp: { light: 0xfff3e0, dark: 0xffd9a0 }
   },
   club: {
-    name: 'Tournament Club',
+    name: 'Tournament',
     squareLight: 0xe6dcc2, squareDark: 0x3d5a45, grain: 0.05,
     frame: 0x232823, frameEdge: 0x1a1e1a,
     table: 0x2e3330, tableGrain: 0.08,
@@ -449,18 +448,6 @@ const THEMES = {
     room: { lightBg: 0xd3d2cc, darkBg: 0x121316 },
     keyTemp: { light: 0xf4f6ff, dark: 0xdfe6ff }
   },
-  ember: {
-    name: 'Midnight Ember',
-    squareLight: 0xc98d4e, squareDark: 0x241a14, grain: 0.20,
-    frame: 0x1b130d, frameEdge: 0x120d08,
-    table: 0x241b13, tableGrain: 0.18,
-    pieceLight: 0xbd9057, pieceDark: 0x15100c,
-    pieceRoughL: 0.42, pieceRoughD: 0.38, clearcoat: 0.18,
-    felt: '#2e0f0f',
-    label: '#d8a45e',
-    room: { lightBg: 0x8a7a64, darkBg: 0x0c0805 },
-    keyTemp: { light: 0xffe9c8, dark: 0xffc27a }
-  }
 };
 
 /* ================================================================
@@ -1317,12 +1304,25 @@ const HOVER_GLOW = 0.5;
 const HOVER_LIFT = 0.07;
 function setGlow(g, i) {
   if (!g || !g.userData.mat) return;
-  g.userData.mat.emissive.setHex(i ? 0xc8a05e : 0x000000);
-  g.userData.mat.emissiveIntensity = i;
-  if (g.userData.accent) {
-    g.userData.accent.emissive.setHex(i ? 0xc8a05e : 0x000000);
-    g.userData.accent.emissiveIntensity = i * 0.8;
+  // Pale boxwood washes toward white if we only add emissive light, so for
+  // light pieces the base color is also pulled down while glowing, letting
+  // a saturated amber dominate instead of a brightness bump. Dark ebony
+  // shows the plain brass emissive clearly on its own.
+  const light = g.userData.pieceColor === 'w';
+  const hex = light ? 0xff7d00 : 0xc8a05e;
+  const mats = [g.userData.mat, g.userData.accent].filter(Boolean);
+  if (i && !g.userData.glowSaved) {
+    g.userData.glowSaved = mats.map(m => m.color.getHex());
   }
+  mats.forEach((m, idx) => {
+    m.emissive.setHex(i ? hex : 0x000000);
+    m.emissiveIntensity = i * (light ? 1.1 : 1) * (idx ? 0.8 : 1);
+    if (g.userData.glowSaved) {
+      m.color.setHex(g.userData.glowSaved[idx]);
+      if (i && light) m.color.multiplyScalar(0.72);
+    }
+  });
+  if (!i) delete g.userData.glowSaved;
 }
 // Quick lift/settle for the hover affordance. Only ever applied to pieces
 // that are on the board (pieceAt) and not selected; the caller guarantees
@@ -1837,7 +1837,7 @@ function playSound(kind) {
 /* ================================================================
    11. THEME + ENVIRONMENT APPLICATION
    ================================================================ */
-let currentTheme = 'walnut';
+let currentTheme = 'club';
 let currentEnv = 'light';
 const ambienceLevel = 0.55;
 
@@ -2121,7 +2121,7 @@ window.__sqScreen = (sq) => {
 };
 
 /* ---------- boot ---------- */
-applyTheme('walnut');
+applyTheme('club');
 syncFromBoard();
 renderStatus();
 updateCamera();
