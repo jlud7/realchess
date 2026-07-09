@@ -1641,6 +1641,7 @@ function applyEnvironment(env) {
   // equirect gradient until then (loadHDRI() re-calls this once it lands).
   if (envCache[env]) {
     scene.environment = envCache[env].texture;
+    if (envRT) { envRT.dispose(); envRT = null; }
   } else {
     buildEnvironment(dark ? T.room.darkBg : T.room.lightBg, dark);
   }
@@ -1773,7 +1774,6 @@ function resize() {
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
   composer.setSize(w, h);
-  gtaoPass.setSize(w, h);
 }
 window.addEventListener('resize', resize);
 resize();
