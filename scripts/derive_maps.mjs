@@ -55,6 +55,8 @@ const ROUGHNESS_RANGE = {
   'green-baize': [0.8, 0.95],
   'boxwood-pieces': [0.25, 0.5],
   'ebony-pieces': [0.25, 0.5],
+  'white-marble-squares': [0.15, 0.35], // polished/honed stone, glossier than any wood set
+  'dark-marble-squares': [0.15, 0.35],
 };
 const DEFAULT_ROUGHNESS_RANGE = [0.4, 0.7];
 
@@ -67,6 +69,8 @@ const NORMAL_STRENGTH = {
   'green-baize': 0.9, // fine felt nap, subtle
   'boxwood-pieces': 0.6, // lacquered, should read mostly smooth
   'ebony-pieces': 0.6,
+  'white-marble-squares': 0.5, // polished stone: veining reads, no pore texture
+  'dark-marble-squares': 0.5,
 };
 const DEFAULT_NORMAL_STRENGTH = 1.2;
 

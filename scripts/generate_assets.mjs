@@ -72,6 +72,14 @@ const ASSETS = [
     name: 'ebony-pieces',
     prompt: `polished ebony wood, very dark brown-black, subtle fine grain striations, satin lacquered finish, ${COMMON}`,
   },
+  {
+    name: 'white-marble-squares',
+    prompt: `polished white carrara marble slab, subtle warm grey veining, honed finish, ${COMMON}`,
+  },
+  {
+    name: 'dark-marble-squares',
+    prompt: `polished dark nero marquina marble slab, near-black with fine white veining, ${COMMON}`,
+  },
 ];
 
 const API = 'https://api.replicate.com/v1';

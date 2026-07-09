@@ -203,6 +203,7 @@
 import * as THREE from 'three';
 import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 /* ================================================================
    1. CHESS ENGINE  (full legal rules — verified by perft)
    ================================================================ */
@@ -469,6 +470,12 @@ const THEMES = {
   carrara: {
     name: 'Carrara Marble',
     squareLight: 0xeceae4, squareDark: 0x53565c, grain: 0.10,
+    // Real polished-stone photographs (see PBR.whiteMarble / PBR.darkMarble
+    // below) instead of the shared wood veneer sets every other theme uses —
+    // this is the one theme where the squares are actually stone, not a
+    // wood photo re-tinted stone-grey. See refreshTints() in section 11.
+    squareSetLight: 'whiteMarble', squareSetDark: 'darkMarble',
+    squareRoughScale: 0.72, // marble reads glossier than the roughnessMap alone gives
     frame: 0x3c3e42, frameEdge: 0x2e3033,
     table: 0x8f8a80, tableGrain: 0.12,
     pieceLight: 0xdcd2bf, pieceDark: 0x33363c,
@@ -512,8 +519,8 @@ const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').match
    now is goToSeat() (the flip-board 180 degree turn), and this damping is
    what makes that turn glide instead of snap. */
 const orbit = {
-  theta: 0, phi: THREE.MathUtils.degToRad(47), radius: 15.5,
-  tTheta: 0, tPhi: THREE.MathUtils.degToRad(47), tRadius: 15.5,
+  theta: 0, phi: THREE.MathUtils.degToRad(31), radius: 17.5,
+  tTheta: 0, tPhi: THREE.MathUtils.degToRad(31), tRadius: 17.5,
   target: new THREE.Vector3(0, 0.4, 0)
 };
 function updateCamera() {
@@ -542,15 +549,22 @@ function updateCamera() {
 // dimmer than the baseline.
 const LI = Math.PI;
 const LI_POINT = 4 * Math.PI;
+// Lowered to a raking ~30 degree elevation (was ~56) so pieces throw
+// visibly long, directional shadows across the board like the reference
+// photography, instead of the short near-noon shadows a high sun gives.
+// applyEnvironment() repositions this per-mode (daylight vs lamplight);
+// this is just the initial/daylight-ish placement before boot calls it.
 const keyLight = new THREE.DirectionalLight(0xfff3e0, 0.95 * LI);
-keyLight.position.set(7, 14, 6);
+keyLight.position.set(7, 5.5, 6);
 keyLight.castShadow = true;
 keyLight.shadow.mapSize.set(4096, 4096);
-keyLight.shadow.camera.left = -8; keyLight.shadow.camera.right = 8;
-keyLight.shadow.camera.top = 8; keyLight.shadow.camera.bottom = -8;
-keyLight.shadow.camera.near = 4; keyLight.shadow.camera.far = 32;
-keyLight.shadow.bias = -0.0006;
-keyLight.shadow.radius = 5;
+// Widened from +/-8 to +/-10.5 to keep the now-longer shadows (and the
+// desk props out at x ~= +/-6.6) inside the frustum without clipping.
+keyLight.shadow.camera.left = -10.5; keyLight.shadow.camera.right = 10.5;
+keyLight.shadow.camera.top = 10.5; keyLight.shadow.camera.bottom = -10.5;
+keyLight.shadow.camera.near = 1; keyLight.shadow.camera.far = 30;
+keyLight.shadow.bias = -0.0008;
+keyLight.shadow.radius = 6.5;
 scene.add(keyLight);
 
 const hemi = new THREE.HemisphereLight(0xdfe8f0, 0x3a2c1c, 0.5 * LI);
@@ -774,6 +788,8 @@ const PBR = {
   boxwood: loadPBRSet('boxwood-pieces'),
   ebony: loadPBRSet('ebony-pieces'),
   greenBaize: loadPBRSet('green-baize'),
+  whiteMarble: loadPBRSet('white-marble-squares'),
+  darkMarble: loadPBRSet('dark-marble-squares'),
 };
 // Fixed repeats for sets that are used exactly once, in place (no per-square
 // randomised cloning needed — the frame/table/pieces/felt each only ever
@@ -820,6 +836,7 @@ function cloneSquareMaps(set) {
    ================================================================ */
 const SQ = 1;                    // square size
 const BOARD_TOP = 0.42;          // y of square surface
+const TABLE_TOP_Y = -0.02;       // y of the bare tabletop surface (table.position.y=-0.47, height 0.9)
 const boardGroup = new THREE.Group();
 scene.add(boardGroup);
 
@@ -870,7 +887,12 @@ function buildBoard() {
     const light = (f + r) % 2 === 1;
     const mat = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.03 });
     mat.userData.light = light;
-    const set = light ? PBR.mapleLight : PBR.walnutDark;
+    // setKey tracks which PBR set (name in the PBR object) this square's
+    // cloned maps currently came from, so refreshTints() can tell when a
+    // theme switch (e.g. into/out of Carrara) needs fresh clones from a
+    // different photograph, not just a re-tint of the existing one.
+    mat.userData.setKey = light ? 'mapleLight' : 'walnutDark';
+    const set = PBR[mat.userData.setKey];
     const maps = cloneSquareMaps(set);
     mat.map = maps.albedo;
     mat.normalMap = maps.normal;
@@ -911,6 +933,176 @@ function buildBoard() {
   }
 }
 buildBoard();
+
+/* ================================================================
+   5b. DESK PROPS  (chess clock, coffee cup + saucer, notepad + pen)
+   Purely decorative set dressing, procedural/low-poly, positioned on the
+   bare tabletop outside the board frame's footprint (half-extent 4.65) so
+   they never sit under the board or the captured-piece columns (section 7).
+   None of these meshes carry userData.square or userData.pieceType, so
+   pickSquare()'s parent-walk (section 9) simply falls through to "no
+   square" on a hit — clicking a prop is a no-op, never a crash.
+   ================================================================ */
+function buildDeskProps() {
+  const propsGroup = new THREE.Group();
+  scene.add(propsGroup);
+
+  // ---- chess clock, left of the board ----
+  // Body is deliberately chunky (a real analog/digital chess clock reads as
+  // a thick block, not a slab): displays live on the camera-facing front
+  // face in recessed dark bezels so they read as screens, not top-face
+  // blobs; the two paddle buttons live on the top face where the fixed
+  // top-down camera actually sees them, one visibly pressed lower than
+  // the other.
+  const clock = new THREE.Group();
+  const CLOCK_W = 1.9, CLOCK_H = 0.6, CLOCK_D = 0.45;
+  const clockBodyMat = new THREE.MeshStandardMaterial({ color: 0x2a2826, roughness: 0.65, metalness: 0.06 });
+  const clockBody = new THREE.Mesh(new RoundedBoxGeometry(CLOCK_W, CLOCK_H, CLOCK_D, 3, 0.06), clockBodyMat);
+  clockBody.castShadow = true; clockBody.receiveShadow = true;
+  clock.add(clockBody);
+
+  // LCD displays in dark bezels on the front face (+Z). The body is a solid
+  // box (no CSG), so a genuinely recessed cavity isn't possible; instead the
+  // bezel is a proud dark frame just outside the body surface and the LCD
+  // sits flush on the bezel's own face, slightly inset from the bezel's
+  // edge -- the dark step reads as a surround once lit, and (critically)
+  // both meshes sit OUTSIDE the body's front face (z > CLOCK_D/2) so they
+  // aren't just swallowed by the opaque body in front of them.
+  const bezelMat = new THREE.MeshStandardMaterial({ color: 0x0e0d0c, roughness: 0.6, metalness: 0.1 });
+  const bezelGeo = new THREE.BoxGeometry(0.8, 0.34, 0.05);
+  // muted grey-green LCD. The albedo is picked well below the target
+  // on-screen value because the front face catches the key light plus the
+  // HDRI: measured off a render, a mid-grey albedo here still tone-maps to
+  // near-white, so the base sits dark and the low envMapIntensity keeps the
+  // Daylight environment from pushing it back up.
+  const lcdMat = new THREE.MeshStandardMaterial({
+    color: 0x666e58, roughness: 0.9, metalness: 0,
+    emissive: 0x39402e, emissiveIntensity: 0.2
+  });
+  lcdMat.envMapIntensity = 0.25;
+  const lcdGeo = new THREE.PlaneGeometry(0.66, 0.24);
+  for (const side of [-1, 1]) {
+    const bezel = new THREE.Mesh(bezelGeo, bezelMat);
+    bezel.position.set(side * 0.47, 0.02, CLOCK_D / 2 + 0.015);
+    clock.add(bezel);
+    const lcd = new THREE.Mesh(lcdGeo, lcdMat);
+    lcd.position.set(side * 0.47, 0.02, CLOCK_D / 2 + 0.041);
+    clock.add(lcd);
+  }
+  const dotMat = new THREE.MeshStandardMaterial({ color: 0x9a2418, roughness: 0.5, metalness: 0 });
+  const dot = new THREE.Mesh(new THREE.SphereGeometry(0.03, 12, 10), dotMat);
+  dot.position.set(0, 0.2, CLOCK_D / 2 + 0.03);
+  clock.add(dot);
+
+  // two proud top buttons — right one sits visibly lower, i.e. pressed
+  const buttonMat = new THREE.MeshStandardMaterial({ color: 0x1b1a17, roughness: 0.55, metalness: 0.1 });
+  const btnUp = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.16, 20), buttonMat);
+  btnUp.position.set(-0.55, CLOCK_H / 2 + 0.05, 0);
+  btnUp.castShadow = true;
+  clock.add(btnUp);
+  const btnDown = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.09, 20), buttonMat);
+  btnDown.position.set(0.55, CLOCK_H / 2 + 0.015, 0);
+  btnDown.castShadow = true;
+  clock.add(btnDown);
+
+  clock.position.set(-7.3, TABLE_TOP_Y + CLOCK_H / 2, 0);
+  clock.rotation.y = THREE.MathUtils.degToRad(18);
+  propsGroup.add(clock);
+
+  // ---- coffee cup + saucer, beyond the far-left corner ----
+  // Saucer is deliberately much wider than the cup rim (reads unambiguously
+  // as a saucer from top-down instead of a second white ring flush with the
+  // first), the liquid is a latte tan rather than near-black coffee so it
+  // separates from the white ceramic, and a small off-center foam pool +
+  // spiral line sells "coffee" rather than "dark disc." The handle sits at
+  // roughly 4-5 o'clock (camera-right, camera-near) after the group's yaw,
+  // matching the reference photo.
+  const cup = new THREE.Group();
+  const ceramicMat = new THREE.MeshStandardMaterial({ color: 0xf1e9da, roughness: 0.25, metalness: 0.02 });
+  const saucer = new THREE.Mesh(new THREE.CylinderGeometry(0.66, 0.58, 0.045, 32), ceramicMat);
+  saucer.position.y = 0.0225;
+  saucer.castShadow = true; saucer.receiveShadow = true;
+  cup.add(saucer);
+  const cupWall = new THREE.Mesh(new THREE.CylinderGeometry(0.30, 0.24, 0.34, 28, 1, true), ceramicMat);
+  cupWall.position.y = 0.045 + 0.17;
+  cupWall.castShadow = true;
+  cup.add(cupWall);
+  const cupBottom = new THREE.Mesh(new THREE.CircleGeometry(0.24, 28), ceramicMat);
+  cupBottom.rotation.x = -Math.PI / 2;
+  cupBottom.position.y = 0.045 + 0.005;
+  cup.add(cupBottom);
+  const coffeeMat = new THREE.MeshStandardMaterial({ color: 0xb9814f, roughness: 0.32, metalness: 0.04 });
+  const coffee = new THREE.Mesh(new THREE.CircleGeometry(0.285, 28), coffeeMat);
+  coffee.rotation.x = -Math.PI / 2;
+  coffee.position.y = 0.045 + 0.32;
+  cup.add(coffee);
+  const foamMat = new THREE.MeshStandardMaterial({ color: 0xf2e7d5, roughness: 0.55, metalness: 0 });
+  const foamPool = new THREE.Mesh(new THREE.CircleGeometry(0.10, 20), foamMat);
+  foamPool.rotation.x = -Math.PI / 2;
+  foamPool.position.set(0.07, 0.045 + 0.322, -0.05);
+  cup.add(foamPool);
+  const swirl = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.009, 8, 20, Math.PI * 1.4), foamMat);
+  swirl.rotation.x = -Math.PI / 2;
+  swirl.position.set(0.07, 0.045 + 0.324, -0.05);
+  cup.add(swirl);
+  const handle = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.03, 8, 20, Math.PI * 1.3), ceramicMat);
+  handle.rotation.z = Math.PI / 2 + 0.2;
+  handle.position.set(0.32, 0.045 + 0.17, 0);
+  handle.castShadow = true;
+  cup.add(handle);
+
+  // teaspoon resting across the saucer
+  const spoonMat = new THREE.MeshStandardMaterial({ color: 0xe7e1d3, roughness: 0.3, metalness: 0.65 });
+  const spoon = new THREE.Group();
+  const spoonHandle = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.02, 0.5, 10), spoonMat);
+  spoonHandle.rotation.z = Math.PI / 2;
+  spoonHandle.position.x = 0.08;
+  spoonHandle.castShadow = true;
+  spoon.add(spoonHandle);
+  const spoonBowl = new THREE.Mesh(new THREE.SphereGeometry(0.085, 14, 10), spoonMat);
+  spoonBowl.scale.set(1, 0.3, 0.6);
+  spoonBowl.position.x = -0.30;
+  spoonBowl.castShadow = true;
+  spoon.add(spoonBowl);
+  spoon.rotation.y = THREE.MathUtils.degToRad(-40);
+  spoon.position.set(-0.12, 0.045 + 0.012, 0.44);
+  cup.add(spoon);
+
+  cup.position.set(-5.55, TABLE_TOP_Y, -3.5);
+  cup.rotation.y = THREE.MathUtils.degToRad(-25);
+  propsGroup.add(cup);
+
+  // ---- notepad + pen, beyond the far-right corner ----
+  const pad = new THREE.Group();
+  const clipboardMat = new THREE.MeshStandardMaterial({ color: 0x30363f, roughness: 0.55, metalness: 0.08 });
+  const clipboard = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.05, 1.55), clipboardMat);
+  clipboard.position.y = 0.025;
+  clipboard.castShadow = true; clipboard.receiveShadow = true;
+  pad.add(clipboard);
+  const paperMat = new THREE.MeshStandardMaterial({ color: 0xf3efe2, roughness: 0.9, metalness: 0 });
+  const paper = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.045, 1.32), paperMat);
+  paper.position.y = 0.05 + 0.0225;
+  paper.castShadow = true; paper.receiveShadow = true;
+  pad.add(paper);
+  const penMat = new THREE.MeshStandardMaterial({ color: 0x14141a, roughness: 0.35, metalness: 0.3 });
+  const pen = new THREE.Group();
+  const penBody = new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.85, 12), penMat);
+  penBody.rotation.z = Math.PI / 2;
+  penBody.castShadow = true;
+  pen.add(penBody);
+  const penTip = new THREE.Mesh(new THREE.ConeGeometry(0.022, 0.09, 12), penMat);
+  penTip.rotation.z = Math.PI / 2;
+  penTip.position.x = 0.47;
+  penTip.castShadow = true;
+  pen.add(penTip);
+  pen.position.set(0.05, 0.05 + 0.045 + 0.02, 0.05);
+  pen.rotation.y = THREE.MathUtils.degToRad(35);
+  pad.add(pen);
+  pad.position.set(6.15, TABLE_TOP_Y, -3.75);
+  pad.rotation.y = THREE.MathUtils.degToRad(20);
+  propsGroup.add(pad);
+}
+buildDeskProps();
 
 /* ================================================================
    6. PIECES  (hand-profiled Staunton set, lathe + extrusion)
@@ -1258,7 +1450,7 @@ function updatePieceMaterial(group) {
   }
 }
 
-const PIECE_SCALE = 1.12, TRAY_SCALE = 0.82;
+const PIECE_SCALE = 1.12, TRAY_SCALE = 0.92;
 function buildPiece(type, color) {
   const g = new THREE.Group();
   g.scale.setScalar(PIECE_SCALE);
@@ -1401,13 +1593,27 @@ let moveHistory = [];                      // { m, undo, san }
 const pieceLayer = new THREE.Group();
 scene.add(pieceLayer);
 
+// Captured pieces stand upright directly on the tabletop beside the board,
+// not on a tray pad: White's captures (pieces White has taken, color==='w')
+// form two columns just outside the board's camera-left edge, Black's
+// (color==='b') two columns just outside the camera-right edge. Each
+// column starts roughly level with the board's center and grows TOWARD
+// the camera (+z) as more pieces land in it, matching the reference photo.
+// Clear of both the board frame (half-extent 4.65) and the desk props in
+// section 5b: the chess clock sits further out along x (x=-7.3) so it
+// never overlaps the white column's outer edge (x=-6.15); the cup and
+// notepad sit at extreme negative z where no capture row reaches.
+const CAPTURE_EDGE_X = 5.55;   // board frame half-extent (4.65) + 0.9 clearance
+const CAPTURE_COL_GAP = 0.6;
+const CAPTURE_ROW_GAP = 0.6;
+const CAPTURE_Z0 = -1.0;
 function trayPosition(list, color) {
-  // captured pieces line up beside the board on the table
   const i = list.length;
-  const col = i % 8, row = Math.floor(i / 8);
-  const x = -3.4 + col * 0.92;
-  const z = color === 'w' ? 5.75 + row * 0.95 : -(5.75 + row * 0.95);
-  return new THREE.Vector3(x, 0.06, z);
+  const col = i % 2, row = Math.floor(i / 2);
+  const side = color === 'w' ? -1 : 1;
+  const x = side * (CAPTURE_EDGE_X + col * CAPTURE_COL_GAP);
+  const z = CAPTURE_Z0 + row * CAPTURE_ROW_GAP;
+  return new THREE.Vector3(x, TABLE_TOP_Y + 0.005, z);
 }
 
 function spawnPiece(type, color, square) {
@@ -1452,7 +1658,6 @@ function syncFromBoard() {
     g.scale.setScalar(TRAY_SCALE);
     g.position.copy(trayPosition(capturedByW, 'w'));
     g.userData.restY = g.position.y;
-    g.rotation.y = (Math.random() - 0.5) * 0.5;
     pieceLayer.add(g);
     capturedByW.push(g);
   }
@@ -1461,7 +1666,6 @@ function syncFromBoard() {
     g.scale.setScalar(TRAY_SCALE);
     g.position.copy(trayPosition(capturedByB, 'b'));
     g.userData.restY = g.position.y;
-    g.rotation.y = (Math.random() - 0.5) * 0.5;
     pieceLayer.add(g);
     capturedByB.push(g);
   }
@@ -1683,7 +1887,6 @@ function executeMove(m) {
     animateMovePiece(capturedGroup, capturedGroup.position.clone(), dest, 0.9, dur + 0.25, () => {
       capturedGroup.position.copy(dest);
       capturedGroup.userData.restY = dest.y;
-      capturedGroup.rotation.y = (Math.random() - 0.5) * 0.5;
     });
     tween(capturedGroup.scale, { x: TRAY_SCALE, y: TRAY_SCALE, z: TRAY_SCALE }, dur + 0.25, easeInOut);
   }
@@ -1905,7 +2108,25 @@ const ambienceLevel = 0.55;
 function refreshTints() {
   const T = THEMES[currentTheme];
   for (const mat of squareMats) {
-    const set = mat.userData.light ? PBR.mapleLight : PBR.walnutDark;
+    // Most themes just re-tint the same maple/walnut veneer photos; Carrara
+    // swaps in real marble photos instead (THEMES.carrara.squareSet{Light,
+    // Dark}). When the desired underlying photo changes, dispose the old
+    // per-square clone and cut a fresh one from the new set (still with its
+    // own random offset/rotation — cloneSquareMaps handles that), otherwise
+    // leave the existing clone alone and just re-tint it in place.
+    const desiredKey = mat.userData.light
+      ? (T.squareSetLight || 'mapleLight')
+      : (T.squareSetDark || 'walnutDark');
+    if (mat.userData.setKey !== desiredKey) {
+      mat.map.dispose(); mat.normalMap.dispose(); mat.roughnessMap.dispose();
+      const maps = cloneSquareMaps(PBR[desiredKey]);
+      mat.map = maps.albedo;
+      mat.normalMap = maps.normal;
+      mat.roughnessMap = maps.roughness;
+      mat.userData.setKey = desiredKey;
+    }
+    mat.roughness = T.squareRoughScale || 1.0;
+    const set = PBR[mat.userData.setKey];
     mat.color.copy(tintFor(mat.userData.light ? T.squareLight : T.squareDark, set.mean));
     mat.needsUpdate = true;
   }
@@ -1957,7 +2178,13 @@ function applyEnvironment(env) {
   // scene brightness under physically correct falloff than the key/fill
   // lights do, so those need to pick up more of the slack.
   keyLight.intensity = (dark ? 0.85 : 0.92) * LI;
-  keyLight.position.set(dark ? 4.5 : 7, dark ? 10 : 14, dark ? 3.5 : 6);
+  // Both modes sit at a raking ~25-31 degree elevation (see the keyLight
+  // setup comment above) so pieces cast long, soft, clearly directional
+  // shadows rather than short near-noon ones. Lamplight's position also
+  // moves to the same side as the `lamp` point light (-6.5, 6.5, -4)
+  // instead of daylight's, so the shadow direction reads as coming from
+  // the lamp even though the point light itself doesn't cast shadows.
+  keyLight.position.set(dark ? -6.0 : 7, dark ? 3.3 : 5.5, dark ? -3.2 : 6);
   lamp.intensity = (dark ? 0.95 : 0) * LI_POINT;
   rim.intensity = (dark ? 0.3 : 0.2) * LI;
   hemi.color.set(dark ? 0x40506a : 0xdfe8f0);
@@ -2045,7 +2272,7 @@ document.getElementById('undo').addEventListener('click', () => {
 // Camera is locked at the seat position; "Flip board" is the only
 // remaining camera motion (an animated 180 degree turn to the other
 // side), so the standalone "Reset camera" button/handler is gone too.
-const HOME = { phi: THREE.MathUtils.degToRad(47), radius: 15.5 };
+const HOME = { phi: THREE.MathUtils.degToRad(31), radius: 17.5 };
 let flipped = false;
 function goToSeat() {
   const base = flipped ? Math.PI : 0;
@@ -2175,6 +2402,10 @@ window.__sqScreen = (sq) => {
   const v = sqPos(sq).project(camera);
   return { x: (v.x + 1) / 2 * window.innerWidth, y: (-v.y + 1) / 2 * window.innerHeight };
 };
+// Tiny read-only test hook: exposes the renderer so a headless harness can
+// read renderer.info.render.frame to confirm the render-on-demand loop is
+// truly idle at rest (no state, no side effects).
+window.__debugRenderer = renderer;
 
 /* ---------- boot ---------- */
 applyTheme('club');
