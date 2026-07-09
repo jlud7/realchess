@@ -171,9 +171,9 @@
   </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-<script>
-'use strict';
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<script type="module">
+import * as THREE from 'three';
 /* ================================================================
    1. CHESS ENGINE  (full legal rules — verified by perft)
    ================================================================ */
@@ -467,7 +467,7 @@ const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-renderer.outputEncoding = THREE.sRGBEncoding;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.toneMapping = THREE.ACESFilmicToneMapping;
 renderer.toneMappingExposure = 1.05;
 
@@ -499,7 +499,18 @@ function updateCamera() {
 }
 
 /* ---------- lights ---------- */
-const keyLight = new THREE.DirectionalLight(0xfff3e0, 0.95);
+// three r128 rendered with legacy (non-physically-correct) lighting.
+// Modern three always uses physically correct lighting: Directional/
+// Ambient/Hemisphere intensities need multiplying by pi to read the same
+// as before, while Point/Spot lights need 4*pi (they additionally moved
+// from an arbitrary unit to candela, i.e. luminous power over 4*pi
+// steradians) — this is three's own documented migration factor, and
+// matches what screenshot comparison against the r128 baseline showed:
+// a flat LI on the lamp (PointLight) alone left Lamplight mode much
+// dimmer than the baseline.
+const LI = Math.PI;
+const LI_POINT = 4 * Math.PI;
+const keyLight = new THREE.DirectionalLight(0xfff3e0, 0.95 * LI);
 keyLight.position.set(7, 14, 6);
 keyLight.castShadow = true;
 keyLight.shadow.mapSize.set(2048, 2048);
@@ -510,14 +521,14 @@ keyLight.shadow.bias = -0.0006;
 keyLight.shadow.radius = 4;
 scene.add(keyLight);
 
-const hemi = new THREE.HemisphereLight(0xdfe8f0, 0x3a2c1c, 0.5);
+const hemi = new THREE.HemisphereLight(0xdfe8f0, 0x3a2c1c, 0.5 * LI);
 scene.add(hemi);
-const ambient = new THREE.AmbientLight(0xffffff, 0.35);
+const ambient = new THREE.AmbientLight(0xffffff, 0.35 * LI);
 scene.add(ambient);
-const lamp = new THREE.PointLight(0xffb46a, 0, 26, 2);
+const lamp = new THREE.PointLight(0xffb46a, 0 * LI_POINT, 26, 2);
 lamp.position.set(-6.5, 6.5, -4);
 scene.add(lamp);
-const rim = new THREE.DirectionalLight(0xcad6ff, 0.22);
+const rim = new THREE.DirectionalLight(0xcad6ff, 0.22 * LI);
 rim.position.set(-8, 7, -9);
 scene.add(rim);
 
@@ -566,7 +577,7 @@ function buildEnvironment(bgHex, dark) {
   }
   const tx = new THREE.CanvasTexture(cv);
   tx.mapping = THREE.EquirectangularReflectionMapping;
-  tx.encoding = THREE.sRGBEncoding;
+  tx.colorSpace = THREE.SRGBColorSpace;
   if (envRT) envRT.dispose();
   envRT = pmrem.fromEquirectangular(tx);
   tx.dispose();
@@ -608,7 +619,7 @@ function makeGrainTexture(hex, strength, streaks) {
   g.putImageData(img, 0, 0);
   const tx = new THREE.CanvasTexture(cv);
   tx.wrapS = tx.wrapT = THREE.RepeatWrapping;
-  tx.encoding = THREE.sRGBEncoding;
+  tx.colorSpace = THREE.SRGBColorSpace;
   tx.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return tx;
 }
@@ -628,7 +639,7 @@ function makeLabelTexture(ch, color) {
   g.fillStyle = color;
   g.fillText(ch, S/2, S/2);
   const tx = new THREE.CanvasTexture(cv);
-  tx.encoding = THREE.sRGBEncoding;
+  tx.colorSpace = THREE.SRGBColorSpace;
   tx.anisotropy = renderer.capabilities.getMaxAnisotropy();
   return tx;
 }
@@ -1450,10 +1461,18 @@ function applyEnvironment(env) {
   scene.fog = new THREE.Fog(bg, 34, 90);
   buildEnvironment(dark ? T.room.darkBg : T.room.lightBg, dark);
   keyLight.color.set(dark ? T.keyTemp.dark : T.keyTemp.light);
-  keyLight.intensity = dark ? 0.65 : 0.92;
+  // Dark/Lamplight's key + fill values are nudged up a bit further than a
+  // flat LI multiplier (0.65 -> 0.85 here; ambient/hemi dark bases below).
+  // Screenshot comparison against the r128 baseline showed Lamplight
+  // reading noticeably darker than Daylight even after the physically
+  // correct light-unit conversion, because the point-light "lamp" (the
+  // dominant source in this mode) has much less influence on overall
+  // scene brightness under physically correct falloff than the key/fill
+  // lights do, so those need to pick up more of the slack.
+  keyLight.intensity = (dark ? 0.85 : 0.92) * LI;
   keyLight.position.set(dark ? 4.5 : 7, dark ? 10 : 14, dark ? 3.5 : 6);
-  lamp.intensity = dark ? 0.95 : 0;
-  rim.intensity = dark ? 0.3 : 0.2;
+  lamp.intensity = (dark ? 0.95 : 0) * LI_POINT;
+  rim.intensity = (dark ? 0.3 : 0.2) * LI;
   hemi.color.set(dark ? 0x40506a : 0xdfe8f0);
   hemi.groundColor.set(dark ? 0x1c1208 : 0x3a2c1c);
   renderer.toneMappingExposure = dark ? 0.92 : 1.0;
@@ -1463,8 +1482,8 @@ function applyAmbience() {
   // IBL now carries most of the fill; keep direct ambient low so forms
   // keep their shading instead of flattening out
   const dark = currentEnv === 'dark';
-  ambient.intensity = (dark ? 0.03 : 0.07) + ambienceLevel * (dark ? 0.2 : 0.3);
-  hemi.intensity = (dark ? 0.08 : 0.15) + ambienceLevel * 0.36;
+  ambient.intensity = ((dark ? 0.22 : 0.07) + ambienceLevel * (dark ? 0.2 : 0.3)) * LI;
+  hemi.intensity = ((dark ? 0.18 : 0.15) + ambienceLevel * 0.36) * LI;
 }
 
 /* ================================================================
