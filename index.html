@@ -112,10 +112,40 @@
   @media (prefers-reduced-motion:reduce){
     .panel{transition:none}
   }
+
+  /* Loading veil: the scene appears only once every texture and HDRI has
+     landed, instead of assets streaming in over the first seconds. */
+  #loader{
+    position:fixed; inset:0; z-index:60; background:#171009;
+    display:flex; align-items:center; justify-content:center;
+    opacity:1; transition:opacity .7s ease;
+  }
+  #loader.done{opacity:0; pointer-events:none}
+  .loader-title{
+    font-family:var(--serif); color:var(--parchment);
+    font-size:26px; letter-spacing:.04em; text-align:center;
+  }
+  .loader-title .accent{color:var(--brass)}
+  .loader-sub{
+    margin-top:12px; font-size:12px; letter-spacing:.28em;
+    text-transform:uppercase; color:rgba(233,221,199,.45);
+    animation:loaderPulse 1.6s ease-in-out infinite;
+  }
+  @keyframes loaderPulse{0%,100%{opacity:.45}50%{opacity:1}}
+  @media (prefers-reduced-motion:reduce){
+    .loader-sub{animation:none}
+  }
 </style>
 </head>
 <body>
 <canvas id="stage"></canvas>
+
+<div id="loader" aria-live="polite">
+  <div class="loader-title">
+    The <span class="accent">Study</span> Board
+    <div class="loader-sub">Setting the board</div>
+  </div>
+</div>
 
 <button class="tab" id="tab" title="Show controls" aria-label="Show controls">♞</button>
 
@@ -592,7 +622,29 @@ function buildEnvironment(bgHex, dark) {
 // hot-swap by re-running applyEnvironment (defined in section 11 — it's a
 // function declaration, so it's already hoisted by the time this callback
 // can possibly fire).
-const rgbeLoader = new RGBELoader();
+// All startup assets (7 PBR texture sets + 2 HDRIs) load through a single
+// manager so the scene appears fully dressed in one reveal instead of
+// textures streaming in over the first seconds. The veil also drops on a
+// timeout so a missing or failed file can never hold the page hostage.
+const loadManager = new THREE.LoadingManager();
+const revealScene = (() => {
+  let done = false;
+  return () => {
+    if (done) return;
+    done = true;
+    const veil = document.getElementById('loader');
+    if (veil) {
+      veil.classList.add('done');
+      setTimeout(() => veil.remove(), 900);
+    }
+    invalidate();
+  };
+})();
+loadManager.onLoad = revealScene;
+loadManager.onError = (url) => console.error('Asset failed to load:', url);
+setTimeout(revealScene, 12000);
+
+const rgbeLoader = new RGBELoader(loadManager);
 const envCache = { light: null, dark: null };
 function loadHDRI(mode, url) {
   rgbeLoader.load(url, (tex) => {
@@ -676,7 +728,7 @@ function makeLabelTexture(ch, color) {
 }
 
 /* ---------- PBR texture sets (real photographs, theme-tinted) ---------- */
-const textureLoader = new THREE.TextureLoader();
+const textureLoader = new THREE.TextureLoader(loadManager);
 const maxAniso = renderer.capabilities.getMaxAnisotropy();
 
 // Average an image down to 4x4 and take the mean pixel — this is the
@@ -1304,22 +1356,26 @@ const HOVER_GLOW = 0.5;
 const HOVER_LIFT = 0.07;
 function setGlow(g, i) {
   if (!g || !g.userData.mat) return;
-  // Pale boxwood washes toward white if we only add emissive light, so for
-  // light pieces the base color is also pulled down while glowing, letting
-  // a saturated amber dominate instead of a brightness bump. Dark ebony
-  // shows the plain brass emissive clearly on its own.
+  // Inverse highlights per side: dark ebony brightens under a brass
+  // emissive, while pale boxwood goes the other way - no added light,
+  // just a strong pull down to a deep honey tone. Light-to-lighter never
+  // read; light-to-dark mirrors how clearly the black pieces respond.
   const light = g.userData.pieceColor === 'w';
-  const hex = light ? 0xff7d00 : 0xc8a05e;
   const mats = [g.userData.mat, g.userData.accent].filter(Boolean);
   if (i && !g.userData.glowSaved) {
     g.userData.glowSaved = mats.map(m => m.color.getHex());
   }
   mats.forEach((m, idx) => {
-    m.emissive.setHex(i ? hex : 0x000000);
-    m.emissiveIntensity = i * (light ? 1.1 : 1) * (idx ? 0.8 : 1);
+    if (light) {
+      m.emissive.setHex(0x000000);
+      m.emissiveIntensity = 0;
+    } else {
+      m.emissive.setHex(i ? 0xc8a05e : 0x000000);
+      m.emissiveIntensity = i * (idx ? 0.8 : 1);
+    }
     if (g.userData.glowSaved) {
       m.color.setHex(g.userData.glowSaved[idx]);
-      if (i && light) m.color.multiplyScalar(0.72);
+      if (i && light) m.color.multiply(new THREE.Color(0.52, 0.36, 0.22));
     }
   });
   if (!i) delete g.userData.glowSaved;
