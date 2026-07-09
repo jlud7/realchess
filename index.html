@@ -1129,9 +1129,7 @@ const GEOMS = {
   // Queen: existing coronet points keep their size; a small orb finial
   // now sits above the crown lip (brief: "an orb on top").
   point: new THREE.ConeGeometry(0.042, 0.105, 12),
-  queenOrb: new THREE.SphereGeometry(0.045, 16, 12),
-  // Bishop's mitre slit: deeper and wider so it reads at a distance.
-  slit: new THREE.CylinderGeometry(0.178, 0.178, 0.022, 40)
+  queenOrb: new THREE.SphereGeometry(0.045, 16, 12)
 };
 
 // Felt pads: one squat cylinder per piece geometry family, radius pegged to
@@ -1306,12 +1304,6 @@ function buildPiece(type, color) {
         const c = add(GEOMS.merlon, 0.785);
         c.rotation.y = a;
       }
-    }
-    if (type === 'b') {
-      // mitre bulb is centered around y=0.84 (see PROFILES.b's arcPts)
-      const slit = add(GEOMS.slit, 0.83, true);
-      slit.rotation.x = 0.62;
-      slit.rotation.z = color === 'w' ? 0.25 : -0.25;
     }
     if (type === 'k') {
       // crown caps flat at y=1.12; a small orb sits on it, then the cross
