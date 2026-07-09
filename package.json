@@ -1,0 +1,13 @@
+{
+  "name": "realchess-assets",
+  "private": true,
+  "type": "module",
+  "description": "Asset generation tooling for the 3D chessboard photorealism pass.",
+  "scripts": {
+    "generate-assets": "node scripts/generate_assets.mjs",
+    "derive-maps": "node scripts/derive_maps.mjs"
+  },
+  "dependencies": {
+    "sharp": "^0.33.5"
+  }
+}
