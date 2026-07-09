@@ -57,6 +57,7 @@ function parseArgs(argv) {
   const out = {
     out: null,
     env: null,        // 'light' | 'dark' | null (leave default)
+    theme: null,       // 'walnut' | 'club' | 'carrara' | 'ember' | null (leave default)
     port: 8791,
     wait: 3000,
     width: 1280,
@@ -66,6 +67,7 @@ function parseArgs(argv) {
     const a = argv[i];
     if (a === '--out') out.out = argv[++i];
     else if (a === '--env') out.env = argv[++i];
+    else if (a === '--theme') out.theme = argv[++i];
     else if (a === '--port') out.port = Number(argv[++i]);
     else if (a === '--wait') out.wait = Number(argv[++i]);
     else if (a === '--width') out.width = Number(argv[++i]);
@@ -77,6 +79,19 @@ function parseArgs(argv) {
   }
   return out;
 }
+
+/*
+ * Note on click reliability: with the GTAO postprocessing pass active, this
+ * sandbox's software GL fallback renders extremely slowly (multi-second
+ * frame times — GTAO's multi-pass AO + Poisson denoise shaders are cheap on
+ * real GPU hardware but pathological under a CPU rasterizer). Playwright's
+ * normal elementHandle.click() waits for the element to report two
+ * consecutive stable animation frames before dispatching, which can hang
+ * well past its 30s default timeout when frames arrive that slowly. Clicks
+ * below are dispatched via page.evaluate(el => el.click()) instead, which
+ * only requires one synchronous DOM tick and reproducibly works regardless
+ * of render cadence.
+ */
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -223,6 +238,10 @@ async function runAttempt(chromium, url, args, extraChromeArgs) {
     await page.goto(url, { waitUntil: 'load' });
     await page.waitForTimeout(args.wait);
 
+    if (args.theme) {
+      await selectTheme(page, args.theme);
+      await page.waitForTimeout(600);
+    }
     if (args.env) {
       await clickEnvButton(page, args.env);
       await page.waitForTimeout(600);
@@ -244,12 +263,24 @@ async function runAttempt(chromium, url, args, extraChromeArgs) {
 
 async function clickEnvButton(page, env) {
   const sel = `#env button[data-env="${env}"]`;
-  const el = await page.$(sel);
-  if (el) {
-    await el.click();
-  } else {
-    console.error(`Env button ${sel} not found; leaving default view.`);
-  }
+  const clicked = await page.evaluate((s) => {
+    const el = document.querySelector(s);
+    if (!el) return false;
+    el.click();
+    return true;
+  }, sel);
+  if (!clicked) console.error(`Env button ${sel} not found; leaving default view.`);
+}
+
+async function selectTheme(page, theme) {
+  const changed = await page.evaluate((t) => {
+    const el = document.getElementById('theme');
+    if (!el) return false;
+    el.value = t;
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  }, theme);
+  if (!changed) console.error(`Theme select not found; leaving default theme.`);
 }
 
 /**

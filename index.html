@@ -174,6 +174,11 @@
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
 <script type="module">
 import * as THREE from 'three';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { GTAOPass } from 'three/addons/postprocessing/GTAOPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 /* ================================================================
    1. CHESS ENGINE  (full legal rules — verified by perft)
    ================================================================ */
@@ -420,6 +425,7 @@ const THEMES = {
     table: 0x6e4b2c, tableGrain: 0.22,
     pieceLight: 0xc49a66, pieceDark: 0x271910,
     pieceRoughL: 0.46, pieceRoughD: 0.42, clearcoat: 0.2,
+    felt: '#1d3a2a',
     label: '#c8a05e',
     room: { lightBg: 0xcdbfa6, darkBg: 0x17100a },
     keyTemp: { light: 0xfff3e0, dark: 0xffd9a0 }
@@ -431,6 +437,7 @@ const THEMES = {
     table: 0x2e3330, tableGrain: 0.08,
     pieceLight: 0xd3c19c, pieceDark: 0x1f1b17,
     pieceRoughL: 0.52, pieceRoughD: 0.48, clearcoat: 0.1,
+    felt: '#14321f',
     label: '#d8cfae',
     room: { lightBg: 0xb9b4a4, darkBg: 0x101312 },
     keyTemp: { light: 0xfdf6ea, dark: 0xffe2b0 }
@@ -442,6 +449,7 @@ const THEMES = {
     table: 0x8f8a80, tableGrain: 0.12,
     pieceLight: 0xdcd2bf, pieceDark: 0x33363c,
     pieceRoughL: 0.34, pieceRoughD: 0.36, clearcoat: 0.32,
+    felt: '#5c2028',
     label: '#b9b3a4',
     room: { lightBg: 0xd3d2cc, darkBg: 0x121316 },
     keyTemp: { light: 0xf4f6ff, dark: 0xdfe6ff }
@@ -453,6 +461,7 @@ const THEMES = {
     table: 0x241b13, tableGrain: 0.18,
     pieceLight: 0xbd9057, pieceDark: 0x15100c,
     pieceRoughL: 0.42, pieceRoughD: 0.38, clearcoat: 0.18,
+    felt: '#2e0f0f',
     label: '#d8a45e',
     room: { lightBg: 0x8a7a64, darkBg: 0x0c0805 },
     keyTemp: { light: 0xffe9c8, dark: 0xffc27a }
@@ -584,8 +593,42 @@ function buildEnvironment(bgHex, dark) {
   scene.environment = envRT.texture;
 }
 
+// Real HDRI environments (Poly Haven, CC0). Loaded async; the procedural
+// buildEnvironment() above stays as a fallback until each one lands, and if
+// the mode that just finished loading is the one currently on screen, we
+// hot-swap by re-running applyEnvironment (defined in section 11 — it's a
+// function declaration, so it's already hoisted by the time this callback
+// can possibly fire).
+const rgbeLoader = new RGBELoader();
+const envCache = { light: null, dark: null };
+function loadHDRI(mode, url) {
+  rgbeLoader.load(url, (tex) => {
+    tex.mapping = THREE.EquirectangularReflectionMapping;
+    const rt = pmrem.fromEquirectangular(tex);
+    tex.dispose();
+    envCache[mode] = rt;
+    if (currentEnv === mode) applyEnvironment(currentEnv);
+  }, undefined, (err) => {
+    console.error('HDRI load failed:', url, err);
+  });
+}
+loadHDRI('light', 'assets/hdri/daylight.hdr');
+loadHDRI('dark', 'assets/hdri/lamplight.hdr');
+
+/* ---------- GTAO postprocessing ---------- */
+const composerTarget = new THREE.WebGLRenderTarget(
+  window.innerWidth, window.innerHeight, { samples: 8, type: THREE.HalfFloatType }
+);
+const composer = new EffectComposer(renderer, composerTarget);
+composer.addPass(new RenderPass(scene, camera));
+const gtaoPass = new GTAOPass(scene, camera, window.innerWidth, window.innerHeight);
+gtaoPass.blendIntensity = 0.85;
+gtaoPass.updateGtaoMaterial({ radius: 0.35, scale: 1.0, thickness: 1, distanceExponent: 1, distanceFallOff: 1 });
+composer.addPass(gtaoPass);
+composer.addPass(new OutputPass());
+
 /* ================================================================
-   4. TEXTURES (procedural wood grain, coordinate labels)
+   4. TEXTURES (procedural wood grain, coordinate labels; PBR sets)
    ================================================================ */
 function makeGrainTexture(hex, strength, streaks) {
   const S = 256;
@@ -644,6 +687,94 @@ function makeLabelTexture(ch, color) {
   return tx;
 }
 
+/* ---------- PBR texture sets (real photographs, theme-tinted) ---------- */
+const textureLoader = new THREE.TextureLoader();
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+
+// Average an image down to 4x4 and take the mean pixel — this is the
+// "neutral" color of the photograph, used so a theme's hex color can be
+// converted into a per-channel tint ratio that recovers that color on
+// average while keeping the real photographic grain/pore detail intact.
+function meanColorFromImage(img) {
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = 4;
+  const g = cv.getContext('2d');
+  g.drawImage(img, 0, 0, 4, 4);
+  const d = g.getImageData(0, 0, 4, 4).data;
+  let r = 0, gg = 0, b = 0, n = 0;
+  for (let i = 0; i < d.length; i += 4) { r += d[i]; gg += d[i + 1]; b += d[i + 2]; n++; }
+  return new THREE.Color(r / n / 255, gg / n / 255, b / n / 255);
+}
+function tintFor(themeHex, meanColor) {
+  const theme = new THREE.Color(themeHex);
+  const c = (a, m) => THREE.MathUtils.clamp(a / Math.max(m, 0.02), 0.25, 2.5);
+  return new THREE.Color(c(theme.r, meanColor.r), c(theme.g, meanColor.g), c(theme.b, meanColor.b));
+}
+function loadPBRSet(name) {
+  const base = `assets/textures/${name}/`;
+  const set = { albedo: null, normal: null, roughness: null, mean: new THREE.Color(0.5, 0.5, 0.5) };
+  set.albedo = textureLoader.load(base + 'albedo.jpg', (tex) => {
+    set.mean = meanColorFromImage(tex.image);
+    refreshTints();
+  });
+  set.albedo.colorSpace = THREE.SRGBColorSpace;
+  set.normal = textureLoader.load(base + 'normal.png');
+  set.roughness = textureLoader.load(base + 'roughness.jpg');
+  for (const t of [set.albedo, set.normal, set.roughness]) {
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = maxAniso;
+  }
+  return set;
+}
+const PBR = {
+  mapleLight: loadPBRSet('maple-light-squares'),
+  walnutDark: loadPBRSet('walnut-dark-squares'),
+  walnutFrame: loadPBRSet('walnut-frame'),
+  oakTable: loadPBRSet('oak-table'),
+  boxwood: loadPBRSet('boxwood-pieces'),
+  ebony: loadPBRSet('ebony-pieces'),
+  greenBaize: loadPBRSet('green-baize'),
+};
+// Fixed repeats for sets that are used exactly once, in place (no per-square
+// randomised cloning needed — the frame/table/pieces/felt each only ever
+// appear as a single continuous surface or a single non-varying material).
+PBR.walnutFrame.albedo.repeat.set(2.5, 0.35);
+PBR.walnutFrame.normal.repeat.set(2.5, 0.35);
+PBR.walnutFrame.roughness.repeat.set(2.5, 0.35);
+PBR.oakTable.albedo.repeat.set(2.2, 1.6);
+PBR.oakTable.normal.repeat.set(2.2, 1.6);
+PBR.oakTable.roughness.repeat.set(2.2, 1.6);
+PBR.boxwood.albedo.repeat.set(2, 3);
+PBR.boxwood.normal.repeat.set(2, 3);
+PBR.boxwood.roughness.repeat.set(2, 3);
+PBR.ebony.albedo.repeat.set(2, 3);
+PBR.ebony.normal.repeat.set(2, 3);
+PBR.ebony.roughness.repeat.set(2, 3);
+PBR.greenBaize.albedo.repeat.set(0.5, 0.5);
+PBR.greenBaize.normal.repeat.set(0.5, 0.5);
+PBR.greenBaize.roughness.repeat.set(0.5, 0.5);
+
+// Board squares get a fresh per-square clone (random rotation + offset) so
+// the fine veneer grain doesn't visibly tile across the 64 squares; clones
+// share the same decoded image (cheap) and only differ by UV transform.
+function cloneSquareMaps(set) {
+  const rot = Math.random() > 0.5 ? Math.PI / 2 : 0;
+  const ox = Math.random(), oy = Math.random();
+  const albedo = set.albedo.clone();
+  const normal = set.normal.clone();
+  const roughness = set.roughness.clone();
+  for (const t of [albedo, normal, roughness]) {
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.center.set(0.5, 0.5);
+    t.repeat.set(0.45, 0.45);
+    t.rotation = rot;
+    t.offset.set(ox, oy);
+    t.anisotropy = maxAniso;
+    t.needsUpdate = true;
+  }
+  return { albedo, normal, roughness };
+}
+
 /* ================================================================
    5. BOARD, TABLE, FRAME, NOTATION
    ================================================================ */
@@ -662,8 +793,13 @@ function sqPos(square) {         // world position of square centre
 }
 
 function buildBoard() {
-  // table
-  tableMat = new THREE.MeshStandardMaterial({ roughness: 0.82, metalness: 0.02 });
+  // table — real oak planks (PBR), tint applied per-theme in applyTheme()
+  tableMat = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.02 });
+  tableMat.map = PBR.oakTable.albedo;
+  tableMat.normalMap = PBR.oakTable.normal;
+  tableMat.normalScale.set(0.8, 0.8);
+  tableMat.roughnessMap = PBR.oakTable.roughness;
+  tableMat.envMapIntensity = 0.25;
   const table = new THREE.Mesh(new THREE.BoxGeometry(30, 0.9, 22), tableMat);
   table.position.y = -0.47;
   table.receiveShadow = true;
@@ -676,19 +812,31 @@ function buildBoard() {
   plinth.castShadow = plinth.receiveShadow = true;
   boardGroup.add(plinth);
 
-  frameMat = new THREE.MeshStandardMaterial({ roughness: 0.55, metalness: 0.05 });
+  frameMat = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.05 });
+  frameMat.map = PBR.walnutFrame.albedo;
+  frameMat.normalMap = PBR.walnutFrame.normal;
+  frameMat.normalScale.set(0.6, 0.6);
+  frameMat.roughnessMap = PBR.walnutFrame.roughness;
+  frameMat.envMapIntensity = 0.3;
   const frame = new THREE.Mesh(new THREE.BoxGeometry(9.3, 0.18, 9.3), frameMat);
   frame.position.y = 0.315;
   frame.castShadow = frame.receiveShadow = true;
   boardGroup.add(frame);
 
-  // 64 squares
+  // 64 squares — maple (light) / walnut-dark (dark) veneer, per-square clone
   const geo = new THREE.BoxGeometry(SQ, 0.08, SQ);
   for (let sq = 0; sq < 64; sq++) {
     const f = sq % 8, r = Math.floor(sq / 8);
     const light = (f + r) % 2 === 1;
-    const mat = new THREE.MeshStandardMaterial({ roughness: 0.5, metalness: 0.03 });
+    const mat = new THREE.MeshStandardMaterial({ roughness: 1.0, metalness: 0.03 });
     mat.userData.light = light;
+    const set = light ? PBR.mapleLight : PBR.walnutDark;
+    const maps = cloneSquareMaps(set);
+    mat.map = maps.albedo;
+    mat.normalMap = maps.normal;
+    mat.normalScale.set(0.5, 0.5);
+    mat.roughnessMap = maps.roughness;
+    mat.envMapIntensity = 0.4;
     const mesh = new THREE.Mesh(geo, mat);
     const p = sqPos(sq);
     mesh.position.set(p.x, BOARD_TOP - 0.04, p.z);
@@ -876,24 +1024,57 @@ const GEOMS = {
   slit: new THREE.CylinderGeometry(0.157, 0.157, 0.014, 40)
 };
 
-let pieceGrainTex = null;   // white-based grain, tinted by each material's color
+// Felt pads: one squat cylinder per piece geometry family, radius pegged to
+// that family's base profile radius so it peeks out as a thin rim right at
+// the foot of the piece (like a real glued-on felt disc), not a coaster.
+const FELT_GEOMS = {};
+for (const t of ['p', 'r', 'b', 'q', 'k', 'n']) {
+  const prof = t === 'n' ? PROFILES.nBase : PROFILES[t];
+  const rad = prof[1][0] * 1.03;
+  FELT_GEOMS[t] = new THREE.CylinderGeometry(rad, rad, 0.05, 32);
+}
+const feltMat = new THREE.MeshPhysicalMaterial({
+  map: PBR.greenBaize.albedo,
+  normalMap: PBR.greenBaize.normal,
+  roughnessMap: PBR.greenBaize.roughness,
+  roughness: 1.0,
+  sheen: 0.5,
+  sheenRoughness: 0.9,
+  envMapIntensity: 0.15,
+  metalness: 0,
+});
 
 function updatePieceMaterial(group) {
   const T = THEMES[currentTheme];
   const w = group.userData.pieceColor === 'w';
+  const set = w ? PBR.boxwood : PBR.ebony;
+  const rough = THREE.MathUtils.clamp((w ? T.pieceRoughL : T.pieceRoughD) * 2, 0.5, 1.5);
   const m = group.userData.mat;
-  m.color.set(w ? T.pieceLight : T.pieceDark);
-  m.roughness = w ? T.pieceRoughL : T.pieceRoughD;
+  m.color.copy(tintFor(w ? T.pieceLight : T.pieceDark, set.mean));
+  m.map = set.albedo;
+  m.normalMap = set.normal;
+  m.normalScale.set(0.35, 0.35);
+  m.roughnessMap = set.roughness;
+  m.roughness = rough;
   m.clearcoat = T.clearcoat;
-  m.envMapIntensity = 0.55;
-  m.map = pieceGrainTex;
+  m.envMapIntensity = 0.5;
   m.needsUpdate = true;
   const a = group.userData.accent;
-  a.color.set(w ? T.pieceLight : T.pieceDark).multiplyScalar(w ? 0.42 : 0.55);
-  a.roughness = Math.min(1, (w ? T.pieceRoughL : T.pieceRoughD) + 0.2);
-  a.envMapIntensity = 0.35;
-  a.map = pieceGrainTex;
+  a.color.copy(tintFor(w ? T.pieceLight : T.pieceDark, set.mean)).multiplyScalar(w ? 0.42 : 0.55);
+  a.map = set.albedo;
+  a.normalMap = set.normal;
+  a.normalScale.set(0.35, 0.35);
+  a.roughnessMap = set.roughness;
+  a.roughness = THREE.MathUtils.clamp(rough + 0.15, 0.5, 1.6);
+  a.envMapIntensity = 0.32;
   a.needsUpdate = true;
+  const felt = group.userData.felt;
+  if (felt) {
+    const tinted = tintFor(T.felt, PBR.greenBaize.mean);
+    felt.color.copy(tinted);
+    felt.sheenColor.copy(tinted).lerp(new THREE.Color(0xffffff), 0.25);
+    felt.needsUpdate = true;
+  }
 }
 
 const PIECE_SCALE = 1.12, TRAY_SCALE = 0.82;
@@ -906,6 +1087,14 @@ function buildPiece(type, color) {
   g.userData.accent = accent;
   g.userData.pieceType = type;
   g.userData.pieceColor = color;
+
+  const felt = new THREE.Mesh(FELT_GEOMS[type], feltMat);
+  felt.position.y = 0.025;
+  felt.castShadow = false;
+  felt.receiveShadow = false;
+  g.add(felt);
+  g.userData.felt = feltMat;
+
   const add = (geo, y, useAccent) => {
     const m = new THREE.Mesh(geo, useAccent ? accent : mat);
     m.position.y = y || 0;
@@ -1406,49 +1595,38 @@ function playSound(kind) {
 let currentTheme = 'walnut';
 let currentEnv = 'light';
 const ambienceLevel = 0.55;
-let grainLight = null, grainDark = null, grainTable = null, grainFrame = null;
+
+// Re-tint every PBR-textured material to the current theme's hex colors,
+// without touching maps, UV transforms or the environment/lights. This is
+// what makes theme switching cheap now that the grain comes from real
+// photographs instead of being redrawn per theme: only material.color (and
+// the piece felt sheen color) change.
+function refreshTints() {
+  const T = THEMES[currentTheme];
+  for (const mat of squareMats) {
+    const set = mat.userData.light ? PBR.mapleLight : PBR.walnutDark;
+    mat.color.copy(tintFor(mat.userData.light ? T.squareLight : T.squareDark, set.mean));
+    mat.needsUpdate = true;
+  }
+  frameMat.color.copy(tintFor(T.frame, PBR.walnutFrame.mean));
+  frameMat.needsUpdate = true;
+  tableMat.color.copy(tintFor(T.table, PBR.oakTable.mean));
+  tableMat.needsUpdate = true;
+  for (const g of pieceLayer.children) updatePieceMaterial(g);
+}
 
 function applyTheme(key) {
   currentTheme = key;
   const T = THEMES[key];
-  if (grainLight) grainLight.dispose();
-  if (grainDark) grainDark.dispose();
-  if (grainTable) grainTable.dispose();
-  if (grainFrame) grainFrame.dispose();
-  grainLight = makeGrainTexture(T.squareLight, T.grain);
-  grainDark = makeGrainTexture(T.squareDark, T.grain);
-  grainTable = makeGrainTexture(T.table, T.tableGrain, 70);
-  grainTable.repeat.set(3, 2.2);
-  grainFrame = makeGrainTexture(T.frame, T.grain * 0.8, 60);
-  grainFrame.repeat.set(2, 2);
-
-  for (const mat of squareMats) {
-    if (mat.map) mat.map.dispose();
-    // vary grain direction subtly per square
-    const tx = (mat.userData.light ? grainLight : grainDark).clone();
-    tx.needsUpdate = true;
-    tx.center.set(0.5, 0.5);
-    tx.rotation = Math.random() > 0.5 ? Math.PI / 2 : 0;
-    tx.offset.set(Math.random(), Math.random());
-    mat.map = tx;
-    mat.color.set(0xffffff);
-    mat.envMapIntensity = 0.35;
-    mat.needsUpdate = true;
-  }
-  frameMat.map = grainFrame; frameMat.color.set(0xffffff);
-  frameMat.envMapIntensity = 0.3; frameMat.needsUpdate = true;
-  frameEdgeMat.color.set(T.frameEdge); frameEdgeMat.map = null; frameEdgeMat.needsUpdate = true;
-  tableMat.map = grainTable; tableMat.color.set(0xffffff);
-  tableMat.envMapIntensity = 0.22; tableMat.needsUpdate = true;
+  frameEdgeMat.color.set(T.frameEdge);
+  frameEdgeMat.needsUpdate = true;
+  refreshTints();
 
   for (const lm of labelMeshes) {
     if (lm.material.map) lm.material.map.dispose();
     lm.material.map = makeLabelTexture(lm.userData.ch, T.label);
     lm.material.needsUpdate = true;
   }
-  if (pieceGrainTex) pieceGrainTex.dispose();
-  pieceGrainTex = makeGrainTexture(0xffffff, 0.085, 34);
-  for (const g of pieceLayer.children) updatePieceMaterial(g);
   applyEnvironment(currentEnv);
 }
 
@@ -1459,7 +1637,13 @@ function applyEnvironment(env) {
   const bg = new THREE.Color(dark ? T.room.darkBg : T.room.lightBg);
   scene.background = bg;
   scene.fog = new THREE.Fog(bg, 34, 90);
-  buildEnvironment(dark ? T.room.darkBg : T.room.lightBg, dark);
+  // Prefer the real HDRI once it has loaded; fall back to the procedural
+  // equirect gradient until then (loadHDRI() re-calls this once it lands).
+  if (envCache[env]) {
+    scene.environment = envCache[env].texture;
+  } else {
+    buildEnvironment(dark ? T.room.darkBg : T.room.lightBg, dark);
+  }
   keyLight.color.set(dark ? T.keyTemp.dark : T.keyTemp.light);
   // Dark/Lamplight's key + fill values are nudged up a bit further than a
   // flat LI multiplier (0.65 -> 0.85 here; ambient/hemi dark bases below).
@@ -1588,6 +1772,8 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
   camera.updateProjectionMatrix();
+  composer.setSize(w, h);
+  gtaoPass.setSize(w, h);
 }
 window.addEventListener('resize', resize);
 resize();
@@ -1620,7 +1806,7 @@ function loop(now) {
     mk.material.opacity = (mk.geometry === capGeo ? 0.75 : 0.6) + 0.15 * Math.sin(t * 3);
   }
 
-  renderer.render(scene, camera);
+  composer.render();
   requestAnimationFrame(loop);
 }
 
