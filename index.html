@@ -1220,22 +1220,6 @@ function updatePieceMaterial(group) {
 }
 
 const PIECE_SCALE = 1.12, TRAY_SCALE = 0.82;
-// Per-flank knight yaw: queenside knights turn toward the centre line one
-// way, kingside knights the other (mirrored again for black), so the whole
-// setup stays symmetric about the centre line while giving the fixed seat
-// camera a 3/4 view of each head. Applied at placement (spawnPiece), since
-// buildPiece does not know the square; a knight that MOVES simply keeps
-// its current yaw (kept simple on purpose), and a full resync (new game /
-// undo / promotion respawn) re-derives it from the square again.
-const KNIGHT_YAW = 0.45;
-function setKnightFacing(g, square) {
-  const head = g.userData.head;
-  if (!head) return;
-  const queenside = (square % 8) < 4;
-  const w = g.userData.pieceColor === 'w';
-  const sign = (queenside ? -1 : 1) * (w ? 1 : -1);
-  head.rotation.y = g.userData.headBase + sign * KNIGHT_YAW;
-}
 function buildPiece(type, color) {
   const g = new THREE.Group();
   g.scale.setScalar(PIECE_SCALE);
@@ -1281,15 +1265,8 @@ function buildPiece(type, color) {
     add(GEOMS.nBase);
     const head = add(GEOMS.nHead, 0.32); // flush with the new nBase top
     // Tournament convention: the knight faces its opponent (muzzle +X in
-    // profile coords -> world -Z for white, +Z for black). This is the
-    // neutral facing used off-board (trays); on-board placement adds a
-    // mirrored per-flank yaw via setKnightFacing() so each knight turns
-    // slightly toward the centre line and the fixed seat camera catches
-    // a readable 3/4 profile instead of a dead-edge-on fin.
-    const headBase = color === 'w' ? Math.PI / 2 : -Math.PI / 2;
-    head.rotation.y = headBase;
-    g.userData.head = head;
-    g.userData.headBase = headBase;
+    // profile coords -> world -Z for white, +Z for black).
+    head.rotation.y = color === 'w' ? Math.PI / 2 : -Math.PI / 2;
     const mane = new THREE.Mesh(GEOMS.nMane, accent);
     mane.castShadow = true;
     mane.position.x = -0.01; // mane coords already track the crest curve
@@ -1379,7 +1356,6 @@ function trayPosition(list, color) {
 
 function spawnPiece(type, color, square) {
   const p = buildPiece(type, color);
-  if (type === 'n') setKnightFacing(p, square);
   const pos = sqPos(square);
   p.position.copy(pos);
   p.userData.restY = pos.y;
