@@ -25,9 +25,12 @@ if (!TOKEN) {
   process.exit(1);
 }
 
-// Model slug, e.g. "black-forest-labs/flux-1.1-pro" or a dedicated
-// tileable-texture model. Verify on replicate.com before running.
-const MODEL = process.env.REPLICATE_MODEL || 'black-forest-labs/flux-1.1-pro';
+// Model slug. Default is openai/gpt-image-2 (runs on Replicate's proxied
+// OpenAI billing, no BYO key needed) for its strong prompt adherence on
+// flat/seamless/no-shadow instructions. Set REPLICATE_MODEL to override,
+// e.g. "black-forest-labs/flux-1.1-pro" as a fallback.
+const MODEL = process.env.REPLICATE_MODEL || 'openai/gpt-image-2';
+const IS_GPT_IMAGE = MODEL.startsWith('openai/gpt-image');
 
 const COMMON =
   'seamless tileable texture, top-down orthographic, flat even studio lighting, ' +
@@ -37,28 +40,60 @@ const ASSETS = [
   {
     name: 'walnut-dark-squares',
     prompt: `dark american walnut wood veneer, fine straight grain, oiled satin finish, deep umber brown, ${COMMON}`,
+    numberOfImages: 2,
   },
   {
     name: 'maple-light-squares',
     prompt: `pale hard maple wood veneer, subtle fine grain, satin finish, warm cream tan, ${COMMON}`,
+    numberOfImages: 2,
   },
   {
     name: 'walnut-frame',
     prompt: `rift sawn walnut board, long continuous straight grain, satin oiled finish, ${COMMON}`,
+    numberOfImages: 2,
   },
   {
     name: 'oak-table',
     prompt: `aged oak table top, wide planks, visible pore structure, matte waxed finish, warm mid brown, ${COMMON}`,
+    numberOfImages: 2,
   },
   {
     name: 'green-baize',
     prompt: `fine wool baize felt fabric, deep bottle green, tight even nap, ${COMMON}`,
   },
+  {
+    name: 'boxwood-pieces',
+    // NOTE: an earlier phrasing ("turned wood grain ... chess piece surface")
+    // made the model render an array of turned discs instead of a flat
+    // material; keep this phrased as a flat macro wood surface.
+    prompt: `polished boxwood wood surface, flat macro close-up of solid wood, fine subtle grain with faint concentric arcs, warm pale ochre yellow, smooth satin lacquered finish, ${COMMON}`,
+  },
+  {
+    name: 'ebony-pieces',
+    prompt: `polished ebony wood, very dark brown-black, subtle fine grain striations, satin lacquered finish, ${COMMON}`,
+  },
 ];
 
 const API = 'https://api.replicate.com/v1';
 
-async function createPrediction(prompt) {
+async function createPrediction(job) {
+  const input = IS_GPT_IMAGE
+    ? {
+        prompt: job.prompt,
+        aspect_ratio: '1024x1024',
+        quality: 'high',
+        output_format: 'png',
+        background: 'opaque',
+        number_of_images: job.numberOfImages || 1,
+        // openai_api_key intentionally omitted: Replicate proxies billing.
+      }
+    : {
+        prompt: job.prompt,
+        aspect_ratio: '1:1',
+        output_format: 'png',
+        width: 1024,
+        height: 1024,
+      };
   const res = await fetch(`${API}/models/${MODEL}/predictions`, {
     method: 'POST',
     headers: {
@@ -66,14 +101,7 @@ async function createPrediction(prompt) {
       'Content-Type': 'application/json',
       Prefer: 'wait=10',
     },
-    body: JSON.stringify({
-      input: {
-        prompt,
-        aspect_ratio: '1:1',
-        output_format: 'png',
-        // width/height/other params depend on the chosen model; adjust here.
-      },
-    }),
+    body: JSON.stringify({ input }),
   });
   if (!res.ok) throw new Error(`create failed ${res.status}: ${await res.text()}`);
   return res.json();
@@ -101,6 +129,23 @@ async function download(url, dest) {
   await writeFile(dest, Buffer.from(await res.arrayBuffer()));
 }
 
+async function runJob(job) {
+  const dir = path.join('assets', 'generated', job.name);
+  await mkdir(dir, { recursive: true });
+  const p = await poll(await createPrediction(job));
+  const outputs = Array.isArray(p.output) ? p.output : [p.output];
+  let i = 0;
+  const saved = [];
+  for (const url of outputs) {
+    const dest = path.join(dir, `albedo${outputs.length > 1 ? '_' + i++ : ''}.png`);
+    await download(url, dest);
+    console.log(`  saved ${dest}`);
+    saved.push(dest);
+  }
+  await writeFile(path.join(dir, 'prompt.txt'), job.prompt + '\n');
+  return saved;
+}
+
 async function run() {
   const filter = process.argv[2] || '';
   const jobs = ASSETS.filter(a => a.name.includes(filter));
@@ -108,25 +153,33 @@ async function run() {
     console.error(`No jobs match "${filter}". Available: ${ASSETS.map(a => a.name).join(', ')}`);
     process.exit(1);
   }
+  const results = { succeeded: [], failed: [] };
   for (const job of jobs) {
     console.log(`\n[${job.name}] generating with ${MODEL}`);
-    const dir = path.join('assets', 'generated', job.name);
-    await mkdir(dir, { recursive: true });
-    const p = await poll(await createPrediction(job.prompt));
-    const outputs = Array.isArray(p.output) ? p.output : [p.output];
-    let i = 0;
-    for (const url of outputs) {
-      const dest = path.join(dir, `albedo${outputs.length > 1 ? '_' + i++ : ''}.png`);
-      await download(url, dest);
-      console.log(`  saved ${dest}`);
+    try {
+      const saved = await runJob(job);
+      results.succeeded.push({ name: job.name, files: saved });
+    } catch (e1) {
+      console.error(`  [${job.name}] attempt 1 failed: ${e1.message}. Retrying once...`);
+      try {
+        const saved = await runJob(job);
+        results.succeeded.push({ name: job.name, files: saved });
+      } catch (e2) {
+        console.error(`  [${job.name}] attempt 2 failed: ${e2.message}. Giving up on this job.`);
+        results.failed.push({ name: job.name, error: e2.message });
+      }
     }
-    await writeFile(path.join(dir, 'prompt.txt'), job.prompt + '\n');
   }
+  console.log('\n=== Summary ===');
+  console.log(`Succeeded (${results.succeeded.length}): ${results.succeeded.map(r => r.name).join(', ') || 'none'}`);
+  console.log(`Failed (${results.failed.length}): ${results.failed.map(r => r.name).join(', ') || 'none'}`);
+  for (const f of results.failed) console.log(`  - ${f.name}: ${f.error}`);
   console.log(
-    '\nDone. Next: derive normal + roughness maps from each albedo\n' +
+    '\nNext: derive normal + roughness maps from each albedo\n' +
     '(e.g. with sharp: high-pass -> normal, inverted luminance -> roughness),\n' +
     'then wire the maps into applyTheme() per CLAUDE.md section 3.'
   );
+  if (results.failed.length) process.exitCode = 1;
 }
 
 run().catch(e => { console.error(e); process.exit(1); });
